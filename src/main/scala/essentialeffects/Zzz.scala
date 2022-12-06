@@ -35,25 +35,29 @@ object Zzz {
             * @return an effect that will semantically block until wakeUp invoked
             */
           override def sleep: IO[Unit] =
-            Deferred[IO, Unit].flatMap { d2 =>
-              stateCell.modify {
-                case Asleep(d) => Asleep(d) -> d.get
-                case Awake => Asleep(d2) -> d2.get
+            MonadCancelThrow[IO].uncancelable { poll =>
+              Deferred[IO, Unit].flatMap { d2 =>
+                stateCell.modify {
+                  case Asleep(d) => Asleep(d) -> d.get
+                  case Awake => Asleep(d2) -> d2.get
+                }
               }
+                .flatTap(_ => barrierAwait)
+                .map(poll(_))
+                .flatten
             }
-              .flatTap(_ => barrierAwait)
-              .flatten
-              .uncancelable
 
           /** Wake up (semantically unblock) any sleepers. No effect if already awake.
             */
           override def wakeUp: IO[Unit] =
-            stateCell.modify {
-              case Asleep(d) => Awake -> d.complete(()).void
-              case Awake => Awake -> IO.unit
+            MonadCancelThrow[IO].uncancelable { poll =>
+              stateCell.modify {
+                case Asleep(d) => Awake -> d.complete(()).void
+                case Awake => Awake -> IO.unit
+              }
+                .map(poll(_))
+                .flatten
             }
-              .flatten
-              .uncancelable
         }
       }
 }

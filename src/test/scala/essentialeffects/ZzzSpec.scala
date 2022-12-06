@@ -45,8 +45,11 @@ class ZzzSpec
             // hold until all the sleeps have been scheduled
             _ <- barrier.await
 
-            // joinWithNever should be safe to use because (for better or worse) `sleep` is uncancelable
-            blockUntilSleepDeferredAreDone = sleepsComplete.parTraverse(_.joinWithNever)
+            blockUntilSleepDeferredAreDone = sleepsComplete.parTraverse(_.join.flatMap {
+              case Outcome.Succeeded(fa) => fa
+              case Outcome.Errored(ex) => IO.raiseError(ex)
+              case Outcome.Canceled() => IO.raiseError(new RuntimeException("a sleep was canceled"))
+            })
 
             race <- IO.race(blockUntilSleepDeferredAreDone, zzz.wakeUp)
 
