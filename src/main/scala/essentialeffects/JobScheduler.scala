@@ -2,6 +2,7 @@ package essentialeffects
 
 import cats.data.Chain
 import cats.effect._
+import cats.effect.std.Semaphore
 import cats.effect.syntax.all._
 
 trait JobScheduler {
@@ -14,12 +15,14 @@ object JobScheduler {
                    running: Map[Job.Id, Job.Running] = Map.empty,
                    completed: Chain[Job.Completed] = Chain.empty
                   ) {
+    def pending: Boolean = scheduled.nonEmpty || running.nonEmpty
+
     def enqueue(job: Job.Scheduled): State =
       copy(scheduled = scheduled :+ job)
 
     def dequeue: (State, Option[Job.Scheduled]) =
-      if (running.size >= maxRunning) this -> None
-      else
+//      if (running.size >= maxRunning) this -> None
+//      else
         scheduled.uncons.map {
           case (head, tail) =>
             copy(scheduled = tail) -> Some(head)
@@ -28,7 +31,7 @@ object JobScheduler {
 
     // TODO we invented this, maybe it's wrong
     def onComplete(job: Job.Completed): State =
-      copy(completed = completed :+ job)
+      copy(running = running - job.id, completed = completed :+ job)
 
     // TODO we invented this, maybe it's wrong
     def addRunning(job: Job.Running): State =
@@ -39,20 +42,36 @@ object JobScheduler {
     def schedule(task: IO[_]): IO[Job.Id] =
       for {
         job <- Job.create(task)
-        _ <- stateRef.update(_.enqueue(job))
+        newState <- stateRef.updateAndGet(_.enqueue(job))
+        _ <- IO.println(s"${newState.scheduled.size} jobs scheduled")
         _ <- zzz.wakeUp
       } yield job.id
   }
 
   def resource(maxRunning: Int): Resource[IO, JobScheduler] =
     for {
+      barrier <- Semaphore[IO](maxRunning).toResource
       schedulerState <- Ref[IO].of(JobScheduler.State(maxRunning)).toResource
       zzz <- Zzz().toResource
       scheduler = JobScheduler.scheduler(schedulerState, zzz)
-      reactor = Reactor(schedulerState)
+      reactor = Reactor(schedulerState, barrier)
       onStart = (_: Job.Id) => IO.unit
       onComplete = (_: Job.Id, _: ExitCase[Throwable]) => zzz.wakeUp
       loop = (zzz.sleep *> reactor.whenAwake(onStart, onComplete)).foreverM
       _ <- loop.background
+      _ <- Resource.onFinalize(waitForScheduledTasksToComplete(zzz, schedulerState))
+      _ <- Resource.onFinalize(IO.println("starting to finalize"))
     } yield scheduler
+
+  def waitForScheduledTasksToComplete(zzz: Zzz, schedulerState: Ref[IO, State]): IO[Unit] =
+    schedulerState
+      .get
+//      .flatMap { state =>
+//        if (state.scheduled.isEmpty && state.running.isEmpty)
+//          IO.println(state)
+//        else
+//          zzz.sleep >> waitForScheduledTasksToComplete(zzz, schedulerState)
+//      }
+      .map(!_.pending)
+      .ifM(IO.unit, zzz.sleep >> waitForScheduledTasksToComplete(zzz, schedulerState))
 }
