@@ -59,6 +59,7 @@ object JobScheduler {
       onComplete = (_: Job.Id, _: ExitCase[Throwable]) => zzz.wakeUp
       loop = (zzz.sleep *> reactor.whenAwake(onStart, onComplete)).foreverM
       _ <- loop.background
+      _ <- Resource.onFinalize(IO.println("waitForScheduledTasksToComplete is complete"))
       _ <- Resource.onFinalize(waitForScheduledTasksToComplete(zzz, schedulerState))
       _ <- Resource.onFinalize(IO.println("starting to finalize"))
     } yield scheduler
@@ -66,12 +67,11 @@ object JobScheduler {
   def waitForScheduledTasksToComplete(zzz: Zzz, schedulerState: Ref[IO, State]): IO[Unit] =
     schedulerState
       .get
-//      .flatMap { state =>
-//        if (state.scheduled.isEmpty && state.running.isEmpty)
-//          IO.println(state)
-//        else
-//          zzz.sleep >> waitForScheduledTasksToComplete(zzz, schedulerState)
-//      }
       .map(!_.pending)
-      .ifM(IO.unit, zzz.sleep >> waitForScheduledTasksToComplete(zzz, schedulerState))
+      .ifM(
+        IO.unit,
+        IO.println("things are still scheduled or running, waiting") >>
+//        zzz.sleep >> // TODO if we sleep here, we risk a deadlock, but it significantly reduces contention!
+          waitForScheduledTasksToComplete(zzz, schedulerState)
+      )
 }
