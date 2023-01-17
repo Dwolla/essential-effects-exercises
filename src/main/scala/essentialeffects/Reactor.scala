@@ -52,7 +52,7 @@ object Reactor {
               .update((state: JobScheduler.State) => state.onComplete(job))
               .flatTap(_ => onComplete(job.id, job.exitCase).attempt)
 
-          startNextJob.iterateUntil(_.isEmpty).void
+          startNextJob.uncancelable.iterateUntil(_.isEmpty).void
         }
       }
 

@@ -5,6 +5,8 @@ import cats.effect._
 import cats.effect.std.Semaphore
 import cats.effect.syntax.all._
 
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
+
 trait JobScheduler {
   def schedule(task: IO[_]): IO[Job.Id]
 }
@@ -59,7 +61,6 @@ object JobScheduler {
       onComplete = (_: Job.Id, _: ExitCase[Throwable]) => zzz.wakeUp
       loop = (zzz.sleep *> reactor.whenAwake(onStart, onComplete)).foreverM
       _ <- loop.background
-      _ <- Resource.onFinalize(IO.println("waitForScheduledTasksToComplete is complete"))
       _ <- Resource.onFinalize(waitForScheduledTasksToComplete(zzz, schedulerState))
       _ <- Resource.onFinalize(IO.println("starting to finalize"))
     } yield scheduler
@@ -67,11 +68,22 @@ object JobScheduler {
   def waitForScheduledTasksToComplete(zzz: Zzz, schedulerState: Ref[IO, State]): IO[Unit] =
     schedulerState
       .get
-      .map(!_.pending)
+      .map(_.pending)
       .ifM(
-        IO.unit,
         IO.println("things are still scheduled or running, waiting") >>
-//        zzz.sleep >> // TODO if we sleep here, we risk a deadlock, but it significantly reduces contention!
-          waitForScheduledTasksToComplete(zzz, schedulerState)
+          zzzSleepWithTimeout(zzz, 10.millis) >>
+          waitForScheduledTasksToComplete(zzz, schedulerState),
+        IO.println("waitForScheduledTasksToComplete is complete")
       )
+      .onCancel(IO.println("canceled waitForScheduledTasksToComplete"))
+
+  /* TODO if this is just zzz.sleep here, we risk a deadlock, but it significantly reduces contention!
+   * introducing our own wakeUp seems to fix the deadlock but it feels a little hacky
+   */
+  private def zzzSleepWithTimeout(zzz: Zzz, timeout: FiniteDuration): IO[Unit] =
+    for {
+      wakeUpFiber <- zzz.wakeUp.delayBy(timeout).start
+      _ <- zzz.sleep
+      _ <- wakeUpFiber.cancel
+    } yield ()
 }
